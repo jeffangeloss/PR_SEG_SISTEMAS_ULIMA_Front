@@ -1,0 +1,918 @@
+// lib/pages/bienvenida/widgets/compositor.dart
+// El compositor de la conversación y sus piezas (RF-BIEN-5 y RF-BIEN-16).
+// Va fijo abajo, sobre el teclado, mide hasta el 60 % del alto disponible y
+// desplaza por dentro si su contenido es más alto. Con el teclado abierto se
+// achica además hasta dejar a la vista el último mensaje, sin bajar del
+// bloque que va del rótulo al envío del turno. Todo control mide al menos
+// 48 dp de alto.
+
+import 'dart:math' as math;
+
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show BoxParentData, RenderProxyBox;
+import 'package:flutter_svg/flutter_svg.dart';
+import 'package:get/get.dart';
+import 'package:lucide_icons_flutter/lucide_icons.dart';
+
+import '../../../components/google_sign_in_button.dart';
+import '../../../configs/themes.dart';
+import '../../../domain/bienvenida/bienvenida_turnos.dart';
+import '../bienvenida_controller.dart';
+import 'anillo_de_foco.dart';
+import 'compositor_del_test.dart';
+
+typedef _Textos = TextosDeLaBienvenida;
+
+class MarcoDelCompositor extends StatelessWidget {
+  const MarcoDelCompositor({
+    super.key,
+    required this.child,
+    required this.altoDisponible,
+    this.altoLibre,
+  });
+
+  final Widget child;
+
+  /// El alto de la página sobre el teclado. El Scaffold ya descuenta el
+  /// teclado de su cuerpo, así que su MediaQuery no lo trae y la página lo
+  /// mide con su LayoutBuilder.
+  final double altoDisponible;
+
+  /// Con el teclado abierto, el alto que queda bajo la franja después de
+  /// dejar entero el último mensaje. El compositor no pasa de él, salvo para
+  /// dejar entero el bloque del envío del turno (RF-BIEN-5). Es null sin
+  /// teclado.
+  final double? altoLibre;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    final mq = MediaQuery.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: MaterialTheme.cardBg(b),
+        border: Border(top: BorderSide(color: MaterialTheme.testLine(b))),
+      ),
+      child: _TopeDelCompositor(
+        tope: altoDisponible * 0.6,
+        libre: altoLibre,
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            12,
+            10,
+            12,
+            24 + (mq.viewInsets.bottom > 0 ? 0 : mq.padding.bottom),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+/// El alto máximo del compositor. Mide hasta el 60 % del alto disponible y,
+/// con el teclado abierto, hasta lo libre bajo el último mensaje, pero nunca
+/// menos que lo que va de su borde de arriba al final del bloque del envío,
+/// con 10 dp debajo. El bloque se mide en el mismo cuadro, también con el
+/// texto grande o en una pantalla angosta, así que el campo con el foco, su
+/// error y su envío quedan a la vista aunque la última burbuja se recorte
+/// (RF-BIEN-5).
+class _TopeDelCompositor extends SingleChildRenderObjectWidget {
+  const _TopeDelCompositor({
+    required this.tope,
+    required this.libre,
+    super.child,
+  });
+
+  /// El 60 % del alto disponible sobre el teclado.
+  final double tope;
+
+  /// Con el teclado abierto, lo libre bajo el último mensaje. Es null sin
+  /// teclado.
+  final double? libre;
+
+  @override
+  _RenderDelTope createRenderObject(BuildContext context) =>
+      _RenderDelTope(tope: tope, libre: libre);
+
+  @override
+  void updateRenderObject(BuildContext context, _RenderDelTope renderObject) {
+    renderObject
+      ..tope = tope
+      ..libre = libre;
+  }
+}
+
+class _RenderDelTope extends RenderProxyBox {
+  _RenderDelTope({required double tope, required double? libre})
+    : _tope = tope,
+      _libre = libre;
+
+  /// En un turno sin bloque del envío, como los de respuestas rápidas, el
+  /// mínimo es el relleno de arriba y una fila de controles de 48 dp.
+  static const double _sinBloque = 10 + 48;
+
+  /// El espacio que queda bajo el bloque del envío.
+  static const double _bajoElBloque = 10;
+
+  double _tope;
+  set tope(double valor) {
+    if (valor == _tope) return;
+    _tope = valor;
+    markNeedsLayout();
+  }
+
+  double? _libre;
+  set libre(double? valor) {
+    if (valor == _libre) return;
+    _libre = valor;
+    markNeedsLayout();
+  }
+
+  /// El bloque del envío del turno, que se anota aquí cada vez que se mide.
+  _RenderDelBloque? _bloque;
+
+  /// Lo que va del borde de arriba del compositor al final del bloque del
+  /// envío, con el relleno. Es null en un turno sin bloque.
+  double? _finDelBloque() {
+    final bloque = _bloque;
+    final alto = bloque?._alto;
+    if (bloque == null || alto == null) return null;
+    var fin = alto;
+    RenderObject? nodo = bloque;
+    while (nodo != null && nodo != this) {
+      final datos = nodo.parentData;
+      // El desplazamiento interno no cuenta, porque la vista del compositor
+      // pinta su contenido corrido y no lo guarda en sus datos.
+      if (datos is BoxParentData) fin += datos.offset.dy;
+      nodo = nodo.parent;
+    }
+    return nodo == null ? null : fin;
+  }
+
+  double _altoMaximo() {
+    final libre = _libre;
+    if (libre == null) return _tope;
+    final minimo = (_finDelBloque() ?? _sinBloque) + _bajoElBloque;
+    return math.min(_tope, math.max(libre, minimo));
+  }
+
+  BoxConstraints _limites(BoxConstraints limites) =>
+      limites.enforce(BoxConstraints(maxHeight: _altoMaximo()));
+
+  @override
+  void performLayout() {
+    final hijo = child;
+    if (hijo == null) {
+      size = constraints.smallest;
+      return;
+    }
+    final antes = _limites(constraints);
+    hijo.layout(antes, parentUsesSize: true);
+    // Al medirse, el bloque pudo cambiar de alto, como cuando aparece el
+    // error, así que el compositor toma su alto nuevo en el mismo cuadro.
+    final despues = _limites(constraints);
+    if (despues != antes) hijo.layout(despues, parentUsesSize: true);
+    size = hijo.size;
+  }
+
+  @override
+  Size computeDryLayout(covariant BoxConstraints constraints) {
+    final hijo = child;
+    if (hijo == null) return constraints.smallest;
+    return hijo.getDryLayout(_limites(constraints));
+  }
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      math.min(super.computeMinIntrinsicHeight(width), _altoMaximo());
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      math.min(super.computeMaxIntrinsicHeight(width), _altoMaximo());
+}
+
+/// El bloque del compositor que va del rótulo al envío del turno, con el
+/// error local bajo el campo. Con el teclado abierto, el compositor no se
+/// achica por debajo de él (RF-BIEN-5).
+class _BloqueDelEnvio extends SingleChildRenderObjectWidget {
+  const _BloqueDelEnvio({required Widget super.child});
+
+  @override
+  _RenderDelBloque createRenderObject(BuildContext context) =>
+      _RenderDelBloque();
+}
+
+class _RenderDelBloque extends RenderProxyBox {
+  _RenderDelTope? _tope;
+
+  /// Su alto de la última medida. El tope no es su padre, así que no puede
+  /// leer su tamaño y lee este.
+  double? _alto;
+
+  @override
+  void performLayout() {
+    super.performLayout();
+    _alto = size.height;
+    // Se anota en el tope del compositor que lo contiene, que lo lee al
+    // terminar de medir su contenido.
+    RenderObject? nodo = parent;
+    while (nodo != null && nodo is! _RenderDelTope) {
+      nodo = nodo.parent;
+    }
+    if (nodo is _RenderDelTope) {
+      nodo._bloque = this;
+      _tope = nodo;
+    }
+  }
+
+  @override
+  void detach() {
+    final tope = _tope;
+    if (tope != null && tope._bloque == this) tope._bloque = null;
+    _tope = null;
+    super.detach();
+  }
+}
+
+class RotuloDelCampo extends StatelessWidget {
+  const RotuloDelCampo(this.texto, {super.key});
+
+  final String texto;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 5),
+    child: Text(
+      texto,
+      style: TextStyle(
+        color: MaterialTheme.testInk2(Theme.brightnessOf(context)),
+        fontSize: 11.5,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+}
+
+class CampoDelCompositor extends StatelessWidget {
+  const CampoDelCompositor({
+    super.key,
+    required this.controlador,
+    required this.pista,
+    this.oculto = false,
+    this.teclado = TextInputType.text,
+    this.accion = TextInputAction.done,
+    this.pistasDeAutocompletado,
+    this.alEnviar,
+    this.sufijo,
+    this.autofocus = true,
+    this.focusNode,
+  });
+
+  final TextEditingController controlador;
+  final String pista;
+  final bool oculto;
+  final TextInputType teclado;
+  final TextInputAction accion;
+  final Iterable<String>? pistasDeAutocompletado;
+  final ValueChanged<String>? alEnviar;
+  final Widget? sufijo;
+  final bool autofocus;
+  final FocusNode? focusNode;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    // Con lector de pantalla el campo no toma el foco solo (RF-BIEN-16).
+    final lector = MediaQuery.accessibleNavigationOf(context);
+    final borde = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(14),
+      borderSide: BorderSide.none,
+    );
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 48),
+      child: TextField(
+        controller: controlador,
+        focusNode: focusNode,
+        autofocus: autofocus && !lector,
+        obscureText: oculto,
+        keyboardType: teclado,
+        textInputAction: accion,
+        autofillHints: pistasDeAutocompletado,
+        onSubmitted: alEnviar,
+        style: TextStyle(color: MaterialTheme.textPrimary(b), fontSize: 15),
+        decoration: InputDecoration(
+          hintText: pista,
+          hintStyle: TextStyle(color: MaterialTheme.testMuted(b), fontSize: 15),
+          filled: true,
+          // Con foco, fondo cardBg (RF-BIEN-5). InputDecorator resuelve el
+          // relleno con el estado del foco, y focusColor no lo cambia.
+          fillColor: WidgetStateColor.resolveWith(
+            (estados) => estados.contains(WidgetState.focused)
+                ? MaterialTheme.cardBg(b)
+                : MaterialTheme.testChipBg(b),
+          ),
+          suffixIcon: sufijo,
+          border: borde,
+          enabledBorder: borde,
+          focusedBorder: borde.copyWith(
+            borderSide: BorderSide(
+              color: MaterialTheme.bienvenidaFoco(b),
+              width: 2,
+            ),
+          ),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 14,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class BotonDeEnvio extends StatelessWidget {
+  const BotonDeEnvio({super.key, required this.alTocar});
+
+  /// Null mientras el campo está vacío, y el botón queda al 40 %.
+  final VoidCallback? alTocar;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    return AnilloDeFoco(
+      radio: BorderRadius.circular(24),
+      child: Semantics(
+        button: true,
+        onTap: alTocar,
+        enabled: alTocar != null,
+        label: _Textos.enviar,
+        excludeSemantics: true,
+        child: Opacity(
+          opacity: alTocar == null ? 0.4 : 1,
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: alTocar,
+              child: Ink(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: LinearGradient(
+                    colors: [
+                      MaterialTheme.testAccentHi(b),
+                      MaterialTheme.testAccent(b),
+                    ],
+                  ),
+                ),
+                child: Icon(
+                  LucideIcons.arrowUp,
+                  color: MaterialTheme.testAccentInk(b),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class OjoDeLaContrasena extends StatelessWidget {
+  const OjoDeLaContrasena({
+    super.key,
+    required this.visible,
+    required this.alTocar,
+  });
+
+  final bool visible;
+  final VoidCallback alTocar;
+
+  @override
+  Widget build(BuildContext context) => AnilloDeFoco(
+    radio: BorderRadius.circular(24),
+    child: Semantics(
+      button: true,
+      onTap: alTocar,
+      toggled: visible,
+      label: visible ? _Textos.ocultarContrasena : _Textos.mostrarContrasena,
+      excludeSemantics: true,
+      child: IconButton(
+        constraints: const BoxConstraints.tightFor(width: 48, height: 48),
+        onPressed: alTocar,
+        icon: Icon(
+          visible ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+          size: 20,
+          color: MaterialTheme.testMuted(Theme.brightnessOf(context)),
+        ),
+      ),
+    ),
+  );
+}
+
+/// Una respuesta rápida, en píldora. La principal va rellena.
+class RespuestaRapida extends StatelessWidget {
+  const RespuestaRapida({
+    super.key,
+    required this.texto,
+    required this.alTocar,
+    this.principal = false,
+    this.esperando = false,
+  });
+
+  final String texto;
+  final VoidCallback? alTocar;
+  final bool principal;
+  final bool esperando;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    return AnilloDeFoco(
+      radio: BorderRadius.circular(999),
+      child: Semantics(
+        button: true,
+        onTap: esperando ? null : alTocar,
+        label: texto,
+        excludeSemantics: true,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(999),
+            onTap: esperando ? null : alTocar,
+            child: Ink(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                border: principal
+                    ? null
+                    : Border.all(
+                        color: MaterialTheme.testAccent(b),
+                        width: 1.5,
+                      ),
+                gradient: principal
+                    ? LinearGradient(
+                        colors: [
+                          MaterialTheme.testAccentHi(b),
+                          MaterialTheme.testAccent(b),
+                        ],
+                      )
+                    : null,
+              ),
+              child: Center(
+                widthFactor: 1,
+                child: esperando
+                    ? SizedBox.square(
+                        dimension: 20,
+                        child: CircularProgressIndicator(
+                          // Sin movimiento no gira (RF-BIEN-15).
+                          value: MediaQuery.disableAnimationsOf(context)
+                              ? 0.75
+                              : null,
+                          strokeWidth: 2,
+                          color: MaterialTheme.testAccentInk(b),
+                        ),
+                      )
+                    : Text(
+                        texto,
+                        style: TextStyle(
+                          color: principal
+                              ? MaterialTheme.testAccentInk(b)
+                              : MaterialTheme.testAccentText(b),
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class RespuestasRapidas extends StatelessWidget {
+  const RespuestasRapidas({super.key, required this.respuestas});
+
+  final List<RespuestaRapida> respuestas;
+
+  @override
+  Widget build(BuildContext context) => Wrap(
+    alignment: WrapAlignment.end,
+    spacing: 8,
+    runSpacing: 8,
+    children: respuestas,
+  );
+}
+
+class BotonPrincipal extends StatelessWidget {
+  const BotonPrincipal({
+    super.key,
+    required this.texto,
+    required this.alTocar,
+    this.esperando = false,
+  });
+
+  final String texto;
+  final VoidCallback? alTocar;
+  final bool esperando;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    final activo = alTocar != null && !esperando;
+    return AnilloDeFoco(
+      radio: BorderRadius.circular(15),
+      child: Semantics(
+        button: true,
+        onTap: activo ? alTocar : null,
+        enabled: activo,
+        label: texto,
+        excludeSemantics: true,
+        child: Opacity(
+          opacity: alTocar == null ? 0.4 : 1,
+          child: Material(
+            type: MaterialType.transparency,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(15),
+              onTap: activo ? alTocar : null,
+              child: Ink(
+                height: 48,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(15),
+                  gradient: LinearGradient(
+                    colors: [
+                      MaterialTheme.testAccentHi(b),
+                      MaterialTheme.testAccent(b),
+                    ],
+                  ),
+                ),
+                child: Center(
+                  child: esperando
+                      ? SizedBox.square(
+                          dimension: 20,
+                          child: CircularProgressIndicator(
+                            // Sin movimiento no gira (RF-BIEN-15).
+                            value: MediaQuery.disableAnimationsOf(context)
+                                ? 0.75
+                                : null,
+                            strokeWidth: 2,
+                            color: MaterialTheme.testAccentInk(b),
+                          ),
+                        )
+                      : Text(
+                          texto,
+                          style: TextStyle(
+                            color: MaterialTheme.testAccentInk(b),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class EnlaceSecundario extends StatelessWidget {
+  const EnlaceSecundario({
+    super.key,
+    required this.texto,
+    required this.alTocar,
+    this.apagado = false,
+  });
+
+  final String texto;
+  final VoidCallback? alTocar;
+
+  /// «¿Olvidaste tu contraseña?» va en testMuted, como en la maqueta.
+  final bool apagado;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    return AnilloDeFoco(
+      radio: BorderRadius.circular(8),
+      child: Semantics(
+        button: true,
+        onTap: alTocar,
+        label: texto,
+        excludeSemantics: true,
+        child: InkWell(
+          onTap: alTocar,
+          child: SizedBox(
+            height: 48,
+            child: Center(
+              widthFactor: 1,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  texto,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: apagado
+                        ? MaterialTheme.testMuted(b)
+                        : MaterialTheme.testAccentText(b),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// «Continuar con Google» en Android e iOS, con el logo oficial y los
+/// colores de la marca de Google (RF-BIEN-6).
+class BotonDeGoogle extends StatelessWidget {
+  const BotonDeGoogle({super.key, required this.alTocar});
+
+  final VoidCallback? alTocar;
+
+  @override
+  Widget build(BuildContext context) {
+    final b = Theme.brightnessOf(context);
+    return AnilloDeFoco(
+      radio: BorderRadius.circular(12),
+      child: Semantics(
+        button: true,
+        onTap: alTocar,
+        label: _Textos.continuarConGoogle,
+        excludeSemantics: true,
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: alTocar,
+            child: Ink(
+              decoration: BoxDecoration(
+                color: MaterialTheme.bienvenidaGoogleFondo(b),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: MaterialTheme.bienvenidaGoogleBorde(b),
+                ),
+              ),
+              // 48 dp de alto, que crecen con el texto grande en lugar de
+              // desbordar (RF-BIEN-16).
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 46),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SvgPicture.asset(
+                        'assets/images/google_logo.svg',
+                        width: 20,
+                        height: 20,
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          _Textos.continuarConGoogle,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: MaterialTheme.bienvenidaGoogleTinta(b),
+                            fontSize: 15,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Un campo con su botón de envío a la derecha.
+class _CampoConEnvio extends StatelessWidget {
+  const _CampoConEnvio({required this.campo, required this.alEnviar});
+
+  final Widget campo;
+  final VoidCallback? alEnviar;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Expanded(child: campo),
+      const SizedBox(width: 8),
+      BotonDeEnvio(alTocar: alEnviar),
+    ],
+  );
+}
+
+/// El campo con el texto que el botón de envío escucha.
+class _AlEscribir extends StatelessWidget {
+  const _AlEscribir({required this.controlador, required this.builder});
+
+  final TextEditingController controlador;
+  final Widget Function(BuildContext context, bool vacio) builder;
+
+  @override
+  Widget build(BuildContext context) =>
+      ValueListenableBuilder<TextEditingValue>(
+        valueListenable: controlador,
+        builder: (context, valor, _) =>
+            builder(context, valor.text.trim().isEmpty),
+      );
+}
+
+class _E1 extends StatelessWidget {
+  const _E1({required this.c});
+
+  final BienvenidaController c;
+
+  @override
+  Widget build(BuildContext context) {
+    final login = c.login;
+    final b = Theme.brightnessOf(context);
+    return Obx(() {
+      // Se lee aquí, en el alcance del Obx, y no dentro del builder del
+      // campo: en web el botón de Google no lo lee, y sin esta lectura el Obx
+      // quedaría sin ningún Rx que observar.
+      final esperando = c.esperando.value;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _BloqueDelEnvio(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const RotuloDelCampo(_Textos.rotuloCodigo),
+                _AlEscribir(
+                  controlador: login.codeController,
+                  builder: (context, vacio) => _CampoConEnvio(
+                    campo: CampoDelCompositor(
+                      controlador: login.codeController,
+                      pista: _Textos.pistaCodigo,
+                      accion: TextInputAction.next,
+                      pistasDeAutocompletado: const [AutofillHints.username],
+                      alEnviar: (_) => c.enviarCodigo(),
+                    ),
+                    alEnviar: vacio || esperando ? null : c.enviarCodigo,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(child: Divider(color: MaterialTheme.testLine(b))),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Text(
+                  _Textos.separadorO,
+                  style: TextStyle(color: MaterialTheme.testMuted(b)),
+                ),
+              ),
+              Expanded(child: Divider(color: MaterialTheme.testLine(b))),
+            ],
+          ),
+          const SizedBox(height: 10),
+          // En web, signIn() no funciona con google_sign_in 6.x, así que va
+          // el botón oficial, con el ancho del compositor hasta 400 px y el
+          // tema del sistema, y la cuenta llega por onCurrentUserChanged.
+          if (kIsWeb)
+            LayoutBuilder(
+              builder: (context, limites) => Center(
+                child: googleSignInButton(
+                  configuracion: configuracionDelBotonDeGoogle(
+                    oscuro: Theme.brightnessOf(context) == Brightness.dark,
+                    anchoDelCompositor: limites.maxWidth,
+                  ),
+                ),
+              ),
+            )
+          else
+            BotonDeGoogle(alTocar: esperando ? null : c.entrarConGoogle),
+        ],
+      );
+    });
+  }
+}
+
+class _E2 extends StatelessWidget {
+  const _E2({required this.c});
+
+  final BienvenidaController c;
+
+  @override
+  Widget build(BuildContext context) {
+    final login = c.login;
+    return Obx(() {
+      // Se lee aquí, en el alcance del Obx, y no dentro del builder del
+      // botón, que se construye aparte.
+      final esperando = c.esperando.value;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // El campo de E1 sigue montado en el grupo del autocompletado,
+          // invisible y fuera de la semántica y del foco, para que el llavero
+          // de iOS y el gestor de contraseñas de Google emparejen el usuario
+          // con la contraseña (RF-BIEN-6).
+          ExcludeFocus(
+            child: Offstage(
+              child: CampoDelCompositor(
+                controlador: login.codeController,
+                pista: _Textos.pistaCodigo,
+                pistasDeAutocompletado: const [AutofillHints.username],
+                autofocus: false,
+              ),
+            ),
+          ),
+          // El envío de E2 es «Entrar», bajo el campo.
+          _BloqueDelEnvio(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const RotuloDelCampo(_Textos.rotuloContrasena),
+                CampoDelCompositor(
+                  controlador: login.passwordController,
+                  pista: _Textos.pistaContrasena,
+                  oculto: !login.passwordVisible.value,
+                  pistasDeAutocompletado: const [AutofillHints.password],
+                  alEnviar: (_) => c.entrar(),
+                  sufijo: OjoDeLaContrasena(
+                    visible: login.passwordVisible.value,
+                    alTocar: login.passwordVisible.toggle,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _AlEscribir(
+                  controlador: login.passwordController,
+                  builder: (context, vacio) => BotonPrincipal(
+                    texto: _Textos.entrar,
+                    esperando: esperando,
+                    alTocar: vacio ? null : c.entrar,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          EnlaceSecundario(
+            texto: _Textos.olvidaste,
+            alTocar: c.abrirOlvido,
+            apagado: true,
+          ),
+        ],
+      );
+    });
+  }
+}
+
+/// El compositor de cada turno. Null en los turnos sin compositor.
+Widget? compositorDelTurno(
+  BuildContext context,
+  BienvenidaController c,
+  TurnoDeLaBienvenida turno,
+) => switch (turno) {
+  TurnoDeLaBienvenida.e1Codigo => _E1(c: c),
+  TurnoDeLaBienvenida.e2Contrasena => _E2(c: c),
+  TurnoDeLaBienvenida.t0Invitacion ||
+  TurnoDeLaBienvenida.pregunta ||
+  TurnoDeLaBienvenida.desempate ||
+  TurnoDeLaBienvenida.espera ||
+  TurnoDeLaBienvenida.resultado => CompositorDelTest(c: c, turno: turno),
+  TurnoDeLaBienvenida.seleccionManual => SeleccionManual(c: c),
+  // «Si no cabe», Ulises saluda ya en la conversación y la pregunta queda
+  // con su respuesta rápida (B-28).
+  TurnoDeLaBienvenida.recibimiento when c.saludoEnLaConversacion.value =>
+    RespuestasRapidas(
+      respuestas: [
+        RespuestaRapida(
+          texto: _Textos.siEntrar,
+          principal: true,
+          alTocar: c.responderAlSaludo,
+        ),
+      ],
+    ),
+  TurnoDeLaBienvenida.recibimiento ||
+  TurnoDeLaBienvenida.llegadaConSesion ||
+  TurnoDeLaBienvenida.e3Despedida ||
+  TurnoDeLaBienvenida.pasoAlHorario => null,
+};

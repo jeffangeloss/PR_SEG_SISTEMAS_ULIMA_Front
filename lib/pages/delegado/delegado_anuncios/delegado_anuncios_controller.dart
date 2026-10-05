@@ -1,0 +1,111 @@
+import 'package:flutter/foundation.dart';
+import 'package:get/get.dart';
+
+import '../../../models/anuncio_model.dart';
+import '../../../models/curso_delegado_model.dart';
+import '../../../models/estadisticas_seccion_model.dart';
+import '../../../services/api_client.dart';
+import '../../../services/delegate_announcement_service.dart';
+import '../../../services/section_statistics_service.dart';
+import 'create_announcement_page.dart';
+
+class DelegadoAnunciosController extends GetxController {
+  DelegadoAnunciosController({
+    required this.curso,
+    DelegateAnnouncementService? announcementService,
+    SectionStatisticsService? statisticsService,
+  }) : _announcementService =
+           announcementService ?? DelegateAnnouncementService(),
+       _statisticsService = statisticsService ?? SectionStatisticsService();
+
+  final CursoDelegado curso;
+  final DelegateAnnouncementService _announcementService;
+  final SectionStatisticsService _statisticsService;
+
+  final loadingStats = false.obs;
+  final loadingAnnouncements = false.obs;
+  final anunciosPublicados = <Anuncio>[].obs;
+  final statistics = Rxn<EstadisticasSeccion>();
+  // Distingue "falló la carga" de "sin datos": la vista muestra un estado de
+  // error con reintentar en vez de estadísticas falsas (ya no hay mock).
+  final statsError = false.obs;
+
+  @override
+  void onInit() {
+    super.onInit();
+    fetchAnnouncements();
+    fetchStatistics();
+  }
+
+  Future<void> fetchAnnouncements() async {
+    loadingAnnouncements.value = true;
+    try {
+      anunciosPublicados.assignAll(
+        await _announcementService.fetchAnnouncementsBySection(curso.idSeccion),
+      );
+    } on ApiException catch (e) {
+      anunciosPublicados.clear();
+      Get.snackbar('No se pudieron cargar los anuncios', e.message);
+    } finally {
+      loadingAnnouncements.value = false;
+    }
+  }
+
+  Future<void> fetchStatistics() async {
+    loadingStats.value = true;
+    try {
+      statistics.value = await _statisticsService.fetchSectionStatistics(
+        curso.idSeccion,
+      );
+      statsError.value = false;
+    } catch (e) {
+      // No relanza: onInit lo llama fire-and-forget. Se marca el error para que
+      // la vista lo muestre en vez de dejar la tarjeta vacía o rota.
+      debugPrint('estadísticas falló: $e');
+      statistics.value = null;
+      statsError.value = true;
+    } finally {
+      loadingStats.value = false;
+    }
+  }
+
+  Future<void> refreshAll() async {
+    // Anuncios y estadísticas se cargan por separado: si una falla, la otra
+    // igual carga (fetchStatistics no atrapa su error, así que sin esto un
+    // fallo de estadísticas tumbaba también los anuncios).
+    await Future.wait([
+      fetchAnnouncements().catchError((e) => debugPrint('anuncios delegado falló: $e')),
+      fetchStatistics().catchError((e) => debugPrint('estadísticas falló: $e')),
+    ]);
+  }
+
+  Future<void> openCreate() async {
+    final created = await Get.to<bool>(
+      () => CreateAnnouncementPage(curso: curso),
+    );
+    if (created == true) await fetchAnnouncements();
+  }
+
+  Future<void> openEdit(Anuncio anuncio) async {
+    final updated = await Get.to<bool>(
+      () => CreateAnnouncementPage(curso: curso, anuncio: anuncio),
+    );
+    if (updated == true) await fetchAnnouncements();
+  }
+
+  Future<void> deleteAnnouncement(Anuncio anuncio) async {
+    try {
+      final deleted = await _announcementService.deleteAnnouncement(anuncio.id);
+      if (deleted) {
+        anunciosPublicados.removeWhere((item) => item.id == anuncio.id);
+        Get.snackbar('Anuncio eliminado', 'El historial ya fue actualizado.');
+      } else {
+        Get.snackbar('No se pudo eliminar', 'Intenta nuevamente.');
+      }
+    } on ApiException catch (e) {
+      Get.snackbar('No se pudo eliminar', e.message);
+    } catch (e) {
+      Get.snackbar('No se pudo eliminar', 'Intenta nuevamente.');
+    }
+  }
+}

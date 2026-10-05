@@ -1,0 +1,73 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+/build/
+/coverage/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Android release signing (NO versionar credenciales ni keystores)
+/android/key.properties
+**/*.jks
+**/*.keystore
+# Excepción: la debug keystore SÍ se versiona (compartida por el equipo; no es
+# secreta, pass "android"). Da un SHA-1 único para todos los builds debug.
+!/android/app/debug.keystore
+
+# Environment files y secretos (NO versionar)
+.env
+.env.*
+!.env.example
+service-account*.json
+*-firebase-adminsdk-*.json
+**/key.properties
+# Scripts que vuelcan un .env — nunca versionar
+**/test_env.js
+
+# Artefactos de Swift Package Manager (Xcode los regenera)
+ios/**/xcshareddata/swiftpm/
+
+node_modules/
+bun.lock
+package.json
+
+# Scripts ad-hoc que tocan la BD (NO versionar: pueden llevar credenciales)
+/list_users.js
