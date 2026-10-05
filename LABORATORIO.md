@@ -59,6 +59,8 @@ Solo Android, iOS y Web arrancan, igual que en la versión 2.1.0. El arranque ll
 
 Las cuentas de prueba son las que crea el seed sintético del backend. La app no ofrece registro público.
 
+En VS Code, `.vscode/launch.json` conserva solo la configuración contra el backend local en `10.0.2.2:3000`. Las dos configuraciones que en la versión 2.1.0 apuntan al backend de producción no se incluyen, así que lo que el `README.md` dice sobre «las tres configuraciones» corresponde a esa versión.
+
 ## El workflow de release
 
 En este repositorio `.github/workflows/build-apk.yml` no existe. En el repositorio original ese workflow compila la app contra la URL del backend de producción, firma el APK y lo publica como release de GitHub, por lo que no forma parte de la variante. La integración continua de `.github/workflows/ci.yml` se conserva y corre `flutter analyze` y `flutter test` en los pull requests hacia `develop` y `main` y en cada push a `develop`.
